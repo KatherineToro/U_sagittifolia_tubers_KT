@@ -1,0 +1,240 @@
+---
+title: "LC-MS of *U.saggitifolia* in positive ionization mode"
+author: "Pablo Corella, Jefferson Pastuña"
+date: "2023-06-11"
+output:
+  github_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+usethis::git_vaccinate()
+```
+
+# Workspace
+## Charging necesary libraries
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE, results='hide'}
+library(notame)  
+library(doParallel) 
+library(magrittr)  
+library(tidyverse) 
+library(patchwork) 
+library(dplyr)
+library(here)
+library(gplots)
+```
+
+## Creating a record
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+ppath <-here()
+init_log(log_file = paste0(ppath, '/Result/LC-MS_Positive/log_LC-MS_Positive.txt'))
+```
+
+## Importing data
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_data <- read_from_excel(file =  "Data/POS_feature_list.xlsx", sheet = 1,
+                            corner_row = 4, corner_column = "E",
+                            split_by = c("Column", "Ion mode"))
+```
+
+## Creating metaboset objects
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_modes <- construct_metabosets(exprs = POS_data$exprs,
+                                  pheno_data = POS_data$pheno_data,
+                                  feature_data = POS_data$feature_data,
+                                  group_col = "Group")
+```
+
+## Extracting each mode in a single object
+
+```{r}
+POS_mode <- POS_modes$RP_POS
+```
+
+## Plotting raw data
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_raw_sambx <- plot_sample_boxplots(POS_mode, order_by = "Group")
+POS_raw_pca <- plot_pca(POS_mode, center = T)
+POS_raw_pca + POS_raw_sambx
+```
+
+# Preprocessing
+
+## Changing features with 0 to NA.
+
+```{r}
+POS_mode <- mark_nas(POS_mode, value = 0)
+```
+
+## Flagging low detection rate features
+
+Features which that were not detected in the 75% of the QC injections and 80% of sample groups will be flagged.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_mode <- flag_detection(POS_mode, qc_limit = 0.75, group_limit = 0.80)
+```
+
+## Drift correction 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_dc <- dc_cubic_spline(POS_mode)
+POS_corrected <- POS_dc$object
+POS_corrected <- flag_quality(POS_corrected)
+```
+
+## Plotting corrected data
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_corr_sambx <- plot_sample_boxplots(POS_corrected, order_by = "Group")
+POS_corr_pca <- plot_pca(POS_corrected, center = T) 
+POS_corr_pca + POS_corr_sambx
+```
+
+## Feature clustering 
+
+This step helps us reduce the number of features of the same molecule that were split due to ionization problems or unexpected behavior.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE, results='hide', cache=TRUE}
+POS_clusteredQC <- cluster_features(POS_corrected, 
+                                    rt_window = 1/60, all_features = T, 
+                                    corr_thresh = 0.9, d_thresh = 0.8 )
+POS_compressedQC <- compress_clusters(POS_clusteredQC)
+```
+
+## Plotting the notame PCA workflow
+
+```{r}
+POS_PCA_2<-plot_pca(POS_compressedQC)
+POS_PCA_2
+```
+
+# Second PCA and loading plot
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+# Extracting flagged features
+POS_no_flag <- drop_flagged(POS_compressedQC)
+
+# Extracting feature table (Expression data)
+POS_feature_table <- exprs(POS_no_flag)
+
+# Extracting Phenotipic data
+POS_pheno_data <- POS_no_flag@phenoData@data
+```
+
+## Preparing data
+
+```{r}
+# Transposing feature table 
+POS_feat_table_pca <- t(POS_feature_table)
+
+# Changing NA to 0 
+POS_feat_table_pca[is.na(POS_feat_table_pca)]=0
+
+# Centering and Scaling features
+POS_pca_noQC <- prcomp(POS_feat_table_pca, center = T, scale. = T)
+```
+
+## Plotting PCA results
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_scores <- POS_pca_noQC$x %>%         # Get PC coordinates
+  data.frame %>%                         # Convert to data frames
+  mutate(Sample_ID = rownames(.)) %>%    # Create a new column with the sample names
+  left_join(POS_pheno_data)              # Adding metadata
+
+ggplot(POS_scores, aes(PC1, PC2, shape = Group, color = Group)) +
+  geom_point(size = 3) +
+  guides(x=guide_axis(title = "PC 1 (43%)"), y=guide_axis(title = "PC 2 (20%)")) +
+  theme_classic()
+
+# Save plot
+#ggsave('Result/LC-MS_Positive/LC_MS_Positive_Score_Plot.png', width = 5, height = 4, device='png', dpi="print")
+```  
+
+## Plotting loading results
+
+```{r}
+POS_loadings <- POS_pca_noQC$rotation %>%   # Extract loadings
+  data.frame(Feature_name = rownames(.))    # New column with feat name
+```
+
+Creating a table with Feature name and Compound column
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_feat_name <- readxl::read_excel("Data/POS_Metabolites.xlsx", 1)
+
+# Creating a new small table of the annotated compounds
+POS_compouds_all <- left_join(POS_feat_name, POS_loadings)
+
+# Plotting results
+ggplot(POS_loadings, aes(PC1, PC2)) + 
+  geom_point(alpha = 0.1) +
+  theme_classic() + 
+  geom_point(data = POS_compouds_all, aes(shape = Identification_level, color = Identification_level), size = 3) +
+  ggrepel::geom_label_repel(data = POS_compouds_all, aes(label = Compound),
+                            box.padding = 0.3) +
+  guides(x=guide_axis(title = "PC 1 (43%)"), y=guide_axis(title = "PC 2 (20%)")) +
+  ggsci::scale_color_aaas()
+
+# Save plot
+#ggsave('Result/LC-MS_Positive/LC_MS_Positive_Loadings_Plot.png', width = 15, height = 9, device='png', dpi="print")
+```
+
+# Heat map plot
+
+Loaded of identified metabolites abundance from Excel file.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE, results='hide'}
+met_hetmap <- readxl::read_excel("Data/POS_Metabolites_Hetmap.xlsx", 3)
+met_hetmap <- met_hetmap[order(met_hetmap$A1),]     # sorted by column
+row.names(met_hetmap) <- met_hetmap$X               # Named rows
+met_hetmap_m <- data.matrix(met_hetmap)             # DataFrame
+met_hetmap_m1 <- met_hetmap_m[1:15,-1]              # Delete the old rows with name
+```
+
+Logarithmic scale.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE, results='hide'}
+log_met_hetmap_m1 <- log10(met_hetmap_m1)
+y <- log_met_hetmap_m1
+```
+
+## Plotting Heat map
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE, results='hide'}
+# Package installation and library loading
+#if (!requireNamespace("devtools", quietly = TRUE)) {
+#  install.packages("devtools")
+#}
+#devtools::install_github("cran/gplots")
+library(gplots)
+
+# Clusters
+hr <- hclust(as.dist(1 - cor(t(y), method = "pearson")), method = "complete")
+hc <- hclust(as.dist(1 - cor(y, method = "spearman")), method = "complete")
+mycol <-  colorpanel(75, "blue", "white", "red")
+
+# Heat map
+heatmap.2(y,  Rowv = as.dendrogram(hr),  Colv = as.dendrogram(hc),  col = mycol,  density.info = "none",  trace = "none",  dendrogram = "both",  scale = "row",  labRow = NULL,  labCol = NULL,  margins = c(4, 12),  key = TRUE,  keysize = 1.5,  key.xlab = NA,  key.ylab = NA,)
+```
+
+## Save Heatmap plot
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE, results='hide'}
+png(filename ="Result/LC-MS_Positive/LC_MS2_Pos_HeatMap.png", width = 10, height = 6, units = "in", pointsize = 12, res=300)
+heatmap.2(y, Rowv = as.dendrogram(hr), Colv = as.dendrogram(hc), col = mycol, density.info = "none", trace = "none", dendrogram = "both", scale = "row", labRow = NULL, labCol = NULL, margins = c(4, 12), key = TRUE, keysize = 0.7, key.xlab = NA, key.ylab = NA)
+dev.off() 
+```
+
+Finish a record.
+
+```{r}
+finish_log()
+```
