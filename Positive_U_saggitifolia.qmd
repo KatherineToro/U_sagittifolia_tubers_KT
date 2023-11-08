@@ -1,0 +1,164 @@
+---
+title: "Review Urospatha saggitifolia Positive Mode Data"
+author: "Katherine Toro"
+format: pptx
+editor: visual
+---
+
+```{r}
+##Installing notame package 
+#install.packages("devtools")
+#devtools::install_github("antonvsdata/notame",
+                         #build_manual = F, build_vignettes = F)
+##Install other required packages
+##Charging required libraries
+library(conflicted)
+library(notame)
+library(doParallel) 
+library(magrittr)  
+library(tidyverse) 
+library(patchwork) 
+library(dplyr)
+library(here)
+library(gplots)
+library(methods)
+library(doParallel) 
+
+```
+
+```{r}
+#Creating a record
+ppath <-here()
+init_log(log_file = paste0(ppath, '/GitHub/U_sagittifolia_tubers_KT/Result/log_LC-MS_Positive.txt'))
+```
+
+## Data 
+
+### Importing data
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, error=FALSE}
+POS_data <- read_from_excel(file =  "/GitHub/U_sagittifolia_tubers_KT/Data/POS_feature_list.xlsx", sheet = 1,
+                            corner_row = 4, corner_column = "E",
+                            split_by = c("Column", "Ion mode"))
+```
+
+### Data being used
+
+The data being used is the feature list in positive ionization obtained from data extraction in MS-DIAL. This data will be modified according to "Notame" package specifications manually before being used in the preprocessing steps.
+
+![](Desktop/Captura de Pantalla 2023-11-01 a la(s) 02.13.28.png){width="388"}
+
+### Modified data 
+
+As observed in the following images, the data obtained form MS-DIAL was adjusted to the format required for the execution of the "Notame" package, such as insert additional columns to the datasheet specifying the column and the ionization mode and remove columns containing peak areas from auto-MS/MS data files. Also, renaming columns from "Average Rt(min)" to "RT" may be needed.
+
+![](Desktop/Captura de Pantalla 2023-11-01 a la(s) 02.02.59.png){width="542"}
+
+![](Desktop/Captura de Pantalla 2023-11-01 a la(s) 02.14.44.png){width="436"}
+
+## Workflow
+
+The workflow followed in the script was:
+
+1.  Peak peaking and peak alignment in MS-Dial
+2.  Data manual modification (of features table)
+3.  Installation of packages and library charging
+4.  Creation of a record.
+5.  Data importation
+    -   The imported data is the modified features table, due to Notame package requirments
+6.  Creation of metaboset.
+    -   `POS_modes <- construct_metabosets(exprs = POS_data$exprs,                                  pheno_data = POS_data$pheno_data,                                  feature_data = POS_data$feature_data,                                  group_col = "Group")`
+    -   Extraction of the expression data, phenotype data, and feature data. And group by "Group" in phenotype data.
+7.  Raw data plotting
+    -   To observe data distribution and identify the presence of a systematic drift. This way we can decide if a drift corrections is needed.
+8.  Pre-processing steps
+    -   Data imputation of features with a 0 value (default of MS-Dial) to NA (R behavior).
+9.  Quality assessment and flagging low quality features.
+    -   `POS_mode <- flag_detection(POS_mode, qc_limit = 0.75, group_limit = 0.80)`
+    -   "Notame" guide provides an ideal qc_limit of 70%. This means that features need to be detected in at least 75% of QC samples. By increasing this limit we ensure a higher quality of the features. In the same way, a group_limit of 0.8 means that features need to be detected in at least 80% of the group samples.
+    -   Features that do not qualify his characteristics are flagged as low quality features and therefore not considered in the rest of the analysis.
+10. Drift correction
+    -   `POS_dc <- dc_cubic_spline(POS_mode)
+        POS_corrected <- POS_dc$object
+        POS_corrected <- flag_quality(POS_corrected)`
+    -   Applies a Cubic spline smoothing method in the data stored in the POS_mode.
+    -   Smoothing data is stored in a POS_corrected variable.
+    -    Assign quality flags ti features (quality control on the data). The result is assigned back to the **`POS_corrected`** variable, which now contains quality-flagged data.
+    -   The positive mode corrected data is then plotted in a PCA.
+11. Feature clustering to reduce data matrix dimension.
+    -   `POS_clusteredQC <- cluster_features(POS_corrected, 
+                                            rt_window = 1/60, all_features = T, 
+                                            corr_thresh = 0.9, d_thresh = 0.8 )
+        POS_compressedQC <- compress_clusters(POS_clusteredQC)`
+    -   For the clustering Positive corrected data is used. A retention time window of 1 second is set for clustering.
+    -   Features with a Spearman correlation coefficient above 0.9 are grouped together (Notame's guide)
+    -   The connectivity degrees are set at 0.8 (standard).
+    -   Clusters are compressed/summarized and stored in `POS_compressedQC`
+    -   Plotting of PCA of `POS_compressedQC` To observe a scores PCA of simplified data.
+12. Flagged Features and Data Extraction
+    -   It removes flagged features from the dataset.
+    -   It extracts the feature table (expression data) and phenotypic data.
+13. Data Preparation for PCA
+    -   The feature table is transposed for PCA.
+    -   Any missing values (NA) in the table are replaced with zeros.
+    -   PCA is applied, centering and scaling the features.
+14. PCA Plot
+    -   The PCA scores are extracted and combined with sample metadata.
+
+    -   A 2D scatter plot is created using **`ggplot2`**, visualizing samples based on the first two principal components (PC1 and PC2).
+
+    -   The plot is customized with specific axis labels, colors, shapes, and styling.
+15. Loading Loading Results
+    -   Extracts loadings from PCA results
+    -   Creates a data frame with feature names
+16. Creating a Table with Feature Names and Compound Information (Manually)
+    -   Reads information about compounds from an Excel file created manually
+    -   Combines the feature names with compound information
+17. Plotting Loading Results
+    -   Generates a scatter plot of PCA loadings in a 2D space (PC1 vs. PC2)
+    -   Overlays the plot with compound information, using shapes and colors based on the identification level of compounds
+    -   Adds compound labels to the plot
+18. Heatmap Plot:
+    -   Loads and preprocesses data from an Excel file
+    -   Applies logarithmic scaling to the data.
+    -   Performs hierarchical clustering on rows and columns using different correlation methods. Generates a heatmap plot with dendrograms, color scales, and other heatmap-specific parameters
+
+## Results
+
+Graphics and corresponding lines of code are presented:
+
+### Plots of raw data
+
+Plots of raw data observed ordered by group.
+
+![](images/Captura de Pantalla 2023-11-08 a la(s) 11.39.31.png){fig-align="center" width="547"}
+
+*By plotting raw data, we can observe the behavior of the data and identify if a drift correction needs to be applied.*
+
+*PCA of raw data shows that QCs are clustered. This makes sense due to QCs being analytic replicates so share the same characteristics.*
+
+*In the other hand, the box plot of samples, when ordered by group, shows a systematically inecrease in abundance between QC samples (which can be attributed to a drift of signal intensity)\**
+
+\*Very little increase form ID15 to ID 20
+
+### Plots of drift corrected data
+
+Plots of drift corrected data ordered by group.
+
+![](Desktop/Captura de Pantalla 2023-11-08 a la(s) 11.38.22.png){fig-align="center" width="536"}
+
+*By plotting corrected data, we can observe if the drift has been appropriately corrected*
+
+*PCA of raw data shows that QCs are still clustered, and the box plot of samples, when ordered by group, shows equal abundance between QC samples.*
+
+### Loading Plots of Positive and Negative data
+
+Loading Plot of Positive Data with Metabolite ID.
+
+![](Desktop/Captura de Pantalla 2023-11-08 a la(s) 11.43.30.png){fig-align="center" width="351"}
+
+Loading Plot of Negative Data with Metabolite ID
+
+![](images/Captura de Pantalla 2023-11-08 a la(s) 11.44.38.png){fig-align="center" width="375"}
+
+*When observing loading plots for positive and negative data with metabolite identification, more metabolites appear to be identified when using negative ionization. On this basis, we can assume that metabolites from the samples could be more easy to ionize when using negative ionization. Therefore, their ionization efficiency when using positive ionization is low.*
